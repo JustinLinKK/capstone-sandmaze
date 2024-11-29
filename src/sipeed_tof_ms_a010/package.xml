@@ -3,9 +3,9 @@
 <package format="3">
   <name>sipeed_tof_ms_a010</name>
   <version>0.0.1</version>
-  <description>ROS2 support for MS-a010 , updated with additional contributions from Justin Lin.</description>
+  <description>ROS2 support for MS-a010 , updated with additional contributions from Justin.</description>
   <maintainer email="taorye@outlook.com">taorye</maintainer>
-  <maintainer email="Justinlin@ieee.org">Your Name</maintainer>
+  <maintainer email="justinlin@ieee.org">justin</maintainer>
   <license>Apache-2.0</license>
 
   <!-- Build dependencies -->
