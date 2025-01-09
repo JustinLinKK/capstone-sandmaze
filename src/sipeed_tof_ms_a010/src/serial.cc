@@ -1,10 +1,9 @@
 // private headers
 #include "serial.hh"
-
+#include <cstdint>
 #include <iostream>
 #include <string>
 #include <vector>
-#include <cstdint>
 
 #ifndef WIN32
 #define MS_A010_DEFAULT_SERIAL_DEV_PATH "/dev/ttyUSB0"

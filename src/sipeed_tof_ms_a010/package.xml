@@ -8,25 +8,14 @@
   <maintainer email="justinlin@ieee.org">justin</maintainer>
   <license>Apache-2.0</license>
 
-  <!-- Build dependencies -->
   <buildtool_depend>ament_cmake</buildtool_depend>
-  <build_depend>rclcpp</build_depend>
-  <build_depend>std_msgs</build_depend>
-  <build_depend>sensor_msgs</build_depend>
-  <build_depend>cv_bridge</build_depend>
-  
-  <!-- Dependencies needed at runtime -->
-  <exec_depend>rclcpp</exec_depend>
-  <exec_depend>std_msgs</exec_depend>
-  <exec_depend>sensor_msgs</exec_depend>
-  <exec_depend>cv_bridge</exec_depend>
 
-  <!-- Test dependencies -->
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 
-  <!-- Export -->
   <export>
     <build_type>ament_cmake</build_type>
+    <depend>std_msgs</depend>
+    <depend>sensor_msgs</depend>
   </export>
 </package>

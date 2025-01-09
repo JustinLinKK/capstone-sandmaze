@@ -1,8 +1,6 @@
 #include <string>
 #include <vector>
 #include <cstdint>
-
-
 class Serial {
  private:
   const std::string &dev_path;

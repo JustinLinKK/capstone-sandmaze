@@ -10,8 +10,6 @@
 #include <std_msgs/msg/header.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <string>
-#include <cstdint>
-
 
 #include "cJSON.h"
 #include "frame_struct.h"
@@ -54,10 +52,9 @@ class SipeedTOF_MSA010_Publisher : public rclcpp::Node {
     if (s.length() == 0) {
       ser >> s;
     }
-    // cout << s << endl;
+    //std::cout << s << std::endl;
     cJSON *cparms = cJSON_ParseWithLength((const char *)s.c_str(), s.length());
     uint32_t tmp;
-    (void)tmp;
     uvf_parms[0] =
         ((float)((cJSON_GetObjectItem(cparms, "fx")->valueint) / 262144.0f));
     uvf_parms[1] =
@@ -163,8 +160,8 @@ class SipeedTOF_MSA010_Publisher : public rclcpp::Node {
     pcmsg.data.resize((pcmsg.height) * (pcmsg.width) * (pcmsg.point_step),
                       0x00);
     uint8_t *ptr = pcmsg.data.data();
-    for (unsigned int j = 0; j < pcmsg.height; j++)
-      for (unsigned int i = 0; i < pcmsg.width; i++) {
+    for (int j = 0; j < pcmsg.height; j++)
+      for (int i = 0; i < pcmsg.width; i++) {
         float cx = (((float)i) - u0) / fox;
         float cy = (((float)j) - v0) / foy;
         float dst = ((float)depth[j * (pcmsg.width) + i]) / 1000;
