@@ -161,6 +161,8 @@ static int test() {
         std::cout << std::string(vec.begin(), vec.end()) << std::endl;
         std::vector<uint8_t>().swap(vec);
         break;
+
+      
     }
 
     ser >> s;

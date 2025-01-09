@@ -33,7 +33,7 @@ typedef struct {
 
 typedef struct {
   frame_head_t frame_head;
-  uint8_t payload[];
+  uint8_t payload[1];
 } __attribute__((packed)) frame_t;
 
 // typedef struct {

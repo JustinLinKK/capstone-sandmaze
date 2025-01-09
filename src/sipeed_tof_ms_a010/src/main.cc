@@ -28,33 +28,46 @@ class SipeedTOF_MSA010_Publisher : public rclcpp::Node {
  public:
   SipeedTOF_MSA010_Publisher() : Node("sipeed_tof_ms_a010") {
     std::string s;
-    this->declare_parameter("device", "/dev/ttyUSB0");
+    this->declare_parameter("device", "/dev/ttyUSB1");
     rclcpp::Parameter device_param = this->get_parameter("device");
     s = device_param.as_string();
     std::cout << "use device: " << s << std::endl;
     pser = new Serial(s);
+    
+    // reboot the device's serial port
+    ser  << "AT+DISP=1\r";
+    while (s.compare("OK\r\n")) {
+      std::cout << "Error on rebooting device" << std::endl;
+      std::cout << "Error: " << s << std::endl;
+      ser  << "AT+DISP=1\r";
+      ser >> s;
+    }
+
 
     ser << "AT\r";
     ser >> s;
-    if (s.compare("OK\r\n")) {
-      // not this serial port
-      return;
+    while (s.compare("OK\r\n")) {
+      std::cout << "Error on checking device" << std::endl;
+      std::cout << "Error: " << s << std::endl;
+      ser >> s;
     }
-
+    
     ser << "AT+COEFF?\r";
     ser >> s;
-    if (s.compare("+COEFF=1\r\nOK\r\n")) {
+    while (s.find("+COEFF=1\r\nOK\r\n") == std::string::npos) {
       // not this serial port
-      return;
+      std::cout << "Error checking coefficient" << std::endl;
+      std::cout << "Error: " << s << std::endl;
+      ser << "AT+COEFF?\r";
+      ser >> s;
     }
-
+    
     s = s.substr(14, s.length() - 14);
     if (s.length() == 0) {
       ser >> s;
     }
     //std::cout << s << std::endl;
     cJSON *cparms = cJSON_ParseWithLength((const char *)s.c_str(), s.length());
-    uint32_t tmp;
     uvf_parms[0] =
         ((float)((cJSON_GetObjectItem(cparms, "fx")->valueint) / 262144.0f));
     uvf_parms[1] =
@@ -70,6 +83,8 @@ class SipeedTOF_MSA010_Publisher : public rclcpp::Node {
 
     /* do not delete it. It is waiting */
     ser >> s;
+    std::cout << "coefficient check" << std::endl;
+    std::cout << s << std::endl;
 
     ser << "AT+DISP=3\r";
     ser >> s;
@@ -79,9 +94,9 @@ class SipeedTOF_MSA010_Publisher : public rclcpp::Node {
     }
 
     publisher_depth =
-        this->create_publisher<sensor_msgs::msg::Image>("depth", 10);
+        this->create_publisher<sensor_msgs::msg::Image>("depth_2", 10);
     publisher_pointcloud =
-        this->create_publisher<sensor_msgs::msg::PointCloud2>("cloud", 10);
+        this->create_publisher<sensor_msgs::msg::PointCloud2>("cloud_2", 10);
     timer_ = this->create_wall_timer(
         30ms, std::bind(&SipeedTOF_MSA010_Publisher::timer_callback, this));
   }
@@ -160,8 +175,8 @@ class SipeedTOF_MSA010_Publisher : public rclcpp::Node {
     pcmsg.data.resize((pcmsg.height) * (pcmsg.width) * (pcmsg.point_step),
                       0x00);
     uint8_t *ptr = pcmsg.data.data();
-    for (int j = 0; j < pcmsg.height; j++)
-      for (int i = 0; i < pcmsg.width; i++) {
+    for (size_t j = 0; j < pcmsg.height; j++)
+      for (size_t i = 0; i < pcmsg.width; i++) {
         float cx = (((float)i) - u0) / fox;
         float cy = (((float)j) - v0) / foy;
         float dst = ((float)depth[j * (pcmsg.width) + i]) / 1000;
