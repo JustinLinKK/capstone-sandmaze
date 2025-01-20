@@ -29,7 +29,14 @@ class SipeedTOF_MSA010_Publisher : public rclcpp::Node {
   SipeedTOF_MSA010_Publisher() : Node("sipeed_tof_ms_a010") {
     std::string s;
     this->declare_parameter("device", "/dev/ttyUSB1");
+    this->declare_parameter("output_topic_num", "one");
     rclcpp::Parameter device_param = this->get_parameter("device");
+    rclcpp::Parameter output_topic_num_param =
+        this->get_parameter("output_topic_num");
+    
+    std::string output_pointcloud_topic = "cloud_" + output_topic_num_param.as_string();
+    std::string output_depth_topic = "depth_" + output_topic_num_param.as_string();
+    std::string output_frame_id = "tof_" + output_topic_num_param.as_string();
     s = device_param.as_string();
     std::cout << "use device: " << s << std::endl;
     pser = new Serial(s);
@@ -94,9 +101,9 @@ class SipeedTOF_MSA010_Publisher : public rclcpp::Node {
     }
 
     publisher_depth =
-        this->create_publisher<sensor_msgs::msg::Image>("depth_2", 10);
+        this->create_publisher<sensor_msgs::msg::Image>(output_depth_topic, 10);
     publisher_pointcloud =
-        this->create_publisher<sensor_msgs::msg::PointCloud2>("cloud_2", 10);
+        this->create_publisher<sensor_msgs::msg::PointCloud2>(output_pointcloud_topic, 10);
     timer_ = this->create_wall_timer(
         30ms, std::bind(&SipeedTOF_MSA010_Publisher::timer_callback, this));
   }
@@ -108,6 +115,7 @@ class SipeedTOF_MSA010_Publisher : public rclcpp::Node {
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr publisher_depth;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr
       publisher_pointcloud;
+  std::string output_frame_id;
 
   void timer_callback() {
     std::string s;
@@ -133,7 +141,8 @@ class SipeedTOF_MSA010_Publisher : public rclcpp::Node {
 
     std_msgs::msg::Header header;
     header.stamp = this->get_clock()->now();
-    header.frame_id = "tof";
+    output_frame_id = "tof_one";
+    header.frame_id = output_frame_id;
 
     sensor_msgs::msg::Image msg_depth =
         *cv_bridge::CvImage(header, "mono8", md).toImageMsg().get();
