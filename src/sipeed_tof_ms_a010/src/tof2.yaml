@@ -1,0 +1,4 @@
+/tof2:
+  ros__parameters:
+    device: "/dev/ttyUSB2"
+    output_topic_num: "two"

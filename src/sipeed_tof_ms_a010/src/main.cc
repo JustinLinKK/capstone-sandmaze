@@ -28,11 +28,14 @@ class SipeedTOF_MSA010_Publisher : public rclcpp::Node {
  public:
   SipeedTOF_MSA010_Publisher() : Node("sipeed_tof_ms_a010") {
     std::string s;
-    this->declare_parameter("device", "/dev/ttyUSB1");
+    this->declare_parameter("device", "/dev/ttyUSB0");
     this->declare_parameter("output_topic_num", "one");
     rclcpp::Parameter device_param = this->get_parameter("device");
     rclcpp::Parameter output_topic_num_param =
         this->get_parameter("output_topic_num");
+        
+    std::cout << "Device Param: " << device_param.as_string() << std::endl;
+    std::cout << "Output Topic Param: " << output_topic_num_param.as_string() << std::endl;
     
     std::string output_pointcloud_topic = "cloud_" + output_topic_num_param.as_string();
     std::string output_depth_topic = "depth_" + output_topic_num_param.as_string();
@@ -41,13 +44,21 @@ class SipeedTOF_MSA010_Publisher : public rclcpp::Node {
     std::cout << "use device: " << s << std::endl;
     pser = new Serial(s);
     
+    int attempts_counter = 0;
+    
     // reboot the device's serial port
     ser  << "AT+DISP=1\r";
     while (s.compare("OK\r\n")) {
-      std::cout << "Error on rebooting device" << std::endl;
+      attempts_counter++;
+      std::cout << "Error on rebooting device, attempt " << attempts_counter << std::endl;
       std::cout << "Error: " << s << std::endl;
       ser  << "AT+DISP=1\r";
       ser >> s;
+      // casuen edit
+      if (attempts_counter > 15) {
+        std::cout << "Max Reboot Attempts Reached, Terminating..." << std::endl;
+        return;
+      }
     }
 
 
@@ -141,7 +152,7 @@ class SipeedTOF_MSA010_Publisher : public rclcpp::Node {
 
     std_msgs::msg::Header header;
     header.stamp = this->get_clock()->now();
-    output_frame_id = "tof_one";
+    // output_frame_id = "tof_one";
     header.frame_id = output_frame_id;
 
     sensor_msgs::msg::Image msg_depth =

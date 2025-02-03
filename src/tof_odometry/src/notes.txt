@@ -1,0 +1,14 @@
+cd capstone-sandmaze/
+source /opt/ros/jazzy/setup.bash
+. install/setup.bash
+ros2 run sipeed_tof_ms_a010 publisher --ros-args --params-file src/sipeed_tof_ms_a010/src/tof1.yaml --remap __node:=tof1
+ros2 run sipeed_tof_ms_a010 publisher --ros-args --params-file src/sipeed_tof_ms_a010/src/tof2.yaml --remap __node:=tof2
+ros2 run bno055 bno055 --ros-args --params-file ./src/bno055/bno055/params/bno055_params_i2c.yaml
+ros2 run tof_odometry tof_processor --ros-args --param "output_topic_num":="one" --remap __node:=tof1_odom
+ros2 run tof_odometry tof_processor --ros-args --param "output_topic_num":="two" --remap __node:=tof2_odom
+
+
+
+
+ros2 run <package_name> <executable_name> --ros-args --params-file <file_name>
+ros2 run sipeed_tof_ms_a010 publisher

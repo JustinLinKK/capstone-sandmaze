@@ -1,0 +1,4 @@
+/tof1:
+  ros__parameters:
+    device: "/dev/ttyUSB0"
+    output_topic_num: "one"
