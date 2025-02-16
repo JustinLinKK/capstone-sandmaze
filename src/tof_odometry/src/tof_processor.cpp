@@ -1,4 +1,5 @@
 #include <memory>
+#include <cmath>
 #include "rclcpp/rclcpp.hpp"
 // Sensor Message
 #include "sensor_msgs/msg/imu.hpp"
@@ -24,13 +25,15 @@ public:
         this->declare_parameter("output_topic_num", "one");
         rclcpp::Parameter output_topic_num_param = this->get_parameter("output_topic_num");
         std::string output_pointcloud_topic = "/cloud_" + output_topic_num_param.as_string();
+        std::string output_depth_topic = "/depth_" + output_topic_num_param.as_string();
         std::string output_odom_topic = "tof_odom_" + output_topic_num_param.as_string();
         std::string output_frame_id = "tof_" + output_topic_num_param.as_string();
         // Subscribers
         imu_subscription =
             this->create_subscription<sensor_msgs::msg::Imu>("/bno055/imu", 10, std::bind(&TOFProcessor::imu_callback, this, std::placeholders::_1));
         tof_subscription =
-            this->create_subscription<sensor_msgs::msg::PointCloud2>(output_pointcloud_topic, 10, std::bind(&TOFProcessor::tof_callback, this, std::placeholders::_1));
+            this->create_subscription<sensor_msgs::msg::Image>(output_depth_topic, 10, std::bind(&TOFProcessor::tof_callback, this, std::placeholders::_1));
+            // this->create_subscription<sensor_msgs::msg::PointCloud2>(output_pointcloud_topic, 10, std::bind(&TOFProcessor::tof_callback, this, std::placeholders::_1));
         // Publishers
         odometry_pub_ = this->create_publisher<nav_msgs::msg::Odometry>(output_odom_topic, 10);
         // Broadcast
@@ -46,29 +49,74 @@ private:
     void imu_callback(const std::shared_ptr<const sensor_msgs::msg::Imu> &msg)
     {
         RCLCPP_INFO(this->get_logger(), "Received IMU data:");
-        (void) msg;   
+        (void) msg;
     }
     // ToF callback for ToF subscription
-    void tof_callback(const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &msg)
+    // void tof_callback(const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &msg)
+    void tof_callback(const std::shared_ptr<const sensor_msgs::msg::Image> &msg)
     {
         /*
             Setup
         */
         pcl::PointCloud<pcl::PointXYZ>::Ptr current_cloud(new pcl::PointCloud<pcl::PointXYZ>());
-        pcl::fromROSMsg(*msg, *current_cloud); //convert PointCloud2 to PointXYZ for PCL
+        // pcl::fromROSMsg(*msg, *current_cloud); //convert PointCloud2 to PointXYZ for PCL
         Eigen::Matrix4d relative_transformation = Eigen::Matrix4d::Identity();
         
         /*
-            Filters
+            Depth Image to 3D Point Cloud
         */
+        current_cloud->header.frame_id = msg->header.frame_id;
+        current_cloud->width = msg->width; // should be 100 pixels
+        current_cloud->height = msg->height; // should be 100 pixels
+        current_cloud->is_dense = false;
         
+        float cx = msg->width / 2.0; // should be 50
+        float cy = msg->height / 2.0; // should be 50
+        
+        for (uint32_t v = 0; v < msg->height; ++v)
+        {
+            for (uint32_t u = 0; u < msg->width; ++u)
+            {
+                /*
+                    Depth Setting: 1-10
+                        1 for 1mm
+                        10 for 10mm
+                    Setting 5:
+                        Minimum: 1 = 5mm = 0.005m
+                        Maximum: 255 = 1275mm = 1.275m 
+                */
+                // float depth = cv_ptr->image.at<float>(v, u) * 0.005;
+                float depth = msg->data[v * 100 + u] * 0.005;
+
+                if (std::isfinite(depth) && depth > 0.0)
+                {
+                    /*
+                        Horizontal FOV: 70 deg, deltax = 70 deg / 100 pixels = 0.7 deg/pixel
+                        Vertical FOV: 60 deg, deltay = 60 deg / 100 pixels = 0.6 deg/pixel
+                        x = depth * tan (0.7 * pixel width * radian conversion)
+                        y = depth * tan (0.6 * pixel height * radian conversion)
+                    */
+                    pcl::PointXYZ point;
+                    point.x = depth * std::tan((u - cx) * 0.7 *3.14159/180); // 0.7 deg/pixel
+                    point.y = depth * std::tan((v - cy) * 0.6 *3.14159/180); // 0.6 deg/pixel
+                    point.z = depth; // should be on max setting which is 1cm (max 255cm for 8 bit)
+                    current_cloud->points.push_back(point);
+                }
+            }
+        }
+        
+        /*
+            Filters
+            TODO: Implemented but not working properly yet
+        */
         // Use voxel grid filter
         // pcl::PointCloud<pcl::PointXYZ>::Ptr voxel_cloud = downsample_cloud(current_cloud);
         // Apply noise filter
-        pcl::PointCloud<pcl::PointXYZ>::Ptr processed_cloud = filter_outliers(current_cloud);
+        // pcl::PointCloud<pcl::PointXYZ>::Ptr processed_cloud = filter_outliers(current_cloud);
         
         
         /*
+            Initial Guess
             TODO: Add initial guess for orientation/position based on IMU data
         */
         
@@ -79,7 +127,7 @@ private:
         */
         if (previous_cloud) {
             pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
-            icp.setInputSource(processed_cloud); // changes based on filters applied
+            icp.setInputSource(current_cloud); // changes based on filters applied
             icp.setInputTarget(previous_cloud);
             pcl::PointCloud<pcl::PointXYZ> aligned_cloud;
             icp.align(aligned_cloud);
@@ -89,13 +137,32 @@ private:
             } else {
                 RCLCPP_INFO(this->get_logger(), "ICP did not converge");
                 relative_transformation = Eigen::Matrix4d::Identity();
+                return;
             }
         }
-
+        
         /*
-            Updating
+            Pose and Twist Rejection
+            TODO: do not update previous_cloud to current_cloud if the change in pose or twist is too big
         */
-        previous_cloud = processed_cloud; // changes based on filters applied
+        Eigen::Vector3d curr_translation = relative_transformation.block<3, 1>(0, 3);
+        const double pose_rejection_threshold = 0.1; // instantaneous movement of 0.05 metres at 10Hz
+        static int reject_count = 0;
+        if (curr_translation.x() > pose_rejection_threshold ||
+            curr_translation.y() > pose_rejection_threshold ||
+            curr_translation.z() > pose_rejection_threshold){
+                reject_count++;
+                if (reject_count > 10) previous_cloud = nullptr;
+                return;
+            }
+        // Eigen::Matrix3d curr_rotation = relative_transformation.block<3, 3>(0, 0);
+        // Eigen::Quaterniond curr_quaternion(curr_rotation);
+        // if (twist_change > twist_rejection_threshold) return;
+        
+        /*
+            Updating and Publishing Transformation
+        */
+        previous_cloud = current_cloud; // changes based on filters applied
         global_transformation =  global_transformation * relative_transformation;
         publish_odometry(global_transformation);
         
@@ -213,7 +280,8 @@ private:
     
     
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription;
-    rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr tof_subscription;
+    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr tof_subscription;
+    // rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr tof_subscription;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odometry_pub_;
     pcl::PointCloud<pcl::PointXYZ>::Ptr previous_cloud;
     Eigen::Matrix4d global_transformation;

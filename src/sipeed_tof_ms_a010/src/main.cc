@@ -54,7 +54,6 @@ class SipeedTOF_MSA010_Publisher : public rclcpp::Node {
       std::cout << "Error: " << s << std::endl;
       ser  << "AT+DISP=1\r";
       ser >> s;
-      // casuen edit
       if (attempts_counter > 15) {
         std::cout << "Max Reboot Attempts Reached, Terminating..." << std::endl;
         return;
@@ -65,19 +64,29 @@ class SipeedTOF_MSA010_Publisher : public rclcpp::Node {
     ser << "AT\r";
     ser >> s;
     while (s.compare("OK\r\n")) {
+      attempts_counter++;
       std::cout << "Error on checking device" << std::endl;
       std::cout << "Error: " << s << std::endl;
       ser >> s;
+      if (attempts_counter > 15) {
+        std::cout << "Max Attempts Reached, Terminating..." << std::endl;
+        return;
+      }
     }
     
     ser << "AT+COEFF?\r";
     ser >> s;
     while (s.find("+COEFF=1\r\nOK\r\n") == std::string::npos) {
+      attempts_counter++;
       // not this serial port
       std::cout << "Error checking coefficient" << std::endl;
       std::cout << "Error: " << s << std::endl;
       ser << "AT+COEFF?\r";
       ser >> s;
+      if (attempts_counter > 15) {
+        std::cout << "Max Attempts Reached, Terminating..." << std::endl;
+        return;
+      }
     }
     
     s = s.substr(14, s.length() - 14);
@@ -103,13 +112,13 @@ class SipeedTOF_MSA010_Publisher : public rclcpp::Node {
     ser >> s;
     std::cout << "coefficient check" << std::endl;
     std::cout << s << std::endl;
-
-    ser << "AT+DISP=3\r";
+    ser << "AT+DISP=3\r"; // 0 for off, 3 for on
     ser >> s;
     if (s.compare("OK\r\n")) {
       // not this serial port
       return;
     }
+    ser << "AT+UNIT=5\r"; // set unit to 5
 
     publisher_depth =
         this->create_publisher<sensor_msgs::msg::Image>(output_depth_topic, 10);
