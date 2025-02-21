@@ -1,0 +1,4 @@
+This pacakge is for use of imu and lidar , launch imu from its driver , then Launch Lidar driver, after that launch the vertical_lidar_node using :
+Ros2 run vertical_lidar_node vertical_lidar_node. 
+Once launched it will append points to transformed.xyz
+you can also launch rviz for real time data to see the point cloud but manually add the topics
