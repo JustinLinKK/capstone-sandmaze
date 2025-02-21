@@ -3,3 +3,6 @@ Odom is from (tof and imu).
 have tested the code using two lidars with odoemtry of scan matching from one, result was good.
 Repalce the odom topic with your odom topic
 Replace the scan2 to /scan , i had scan2 as i configured driver to publish different topics for scans , default is /scan
+Refrences: Eleceng 3Ey4 course notes + quaternion mathworks + quaternion wiki
+
+TODO : ToF + IMU testing with LiDAR
