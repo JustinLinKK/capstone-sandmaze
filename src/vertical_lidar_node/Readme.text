@@ -2,3 +2,8 @@ This pacakge is for use of imu and lidar , launch imu from its driver , then Lau
 Ros2 run vertical_lidar_node vertical_lidar_node. 
 Once launched it will append points to transformed.xyz
 you can also launch rviz for real time data to see the point cloud but manually add the topics
+Refrences : Eleceng 3EY4 course notes + Quaternion wiki page
+
+
+
+TODO: creating a new file for each launch 
