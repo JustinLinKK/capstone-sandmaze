@@ -1,5 +1,6 @@
 #include <memory>
 #include <cmath>
+#include <mutex>
 #include "rclcpp/rclcpp.hpp"
 // Sensor Message
 #include "sensor_msgs/msg/imu.hpp"
@@ -14,7 +15,10 @@
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/filters/statistical_outlier_removal.h>
 #include <Eigen/Dense>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2_ros/transform_broadcaster.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 using namespace std::chrono_literals;
 
 class TOFProcessor : public rclcpp::Node
@@ -22,45 +26,63 @@ class TOFProcessor : public rclcpp::Node
 public:
     TOFProcessor() : Node("tof_processor")
     {
+        // ToF Setup
+        previous_cloud = nullptr;
+        current_cloud = nullptr;
         this->declare_parameter("output_topic_num", "one");
         rclcpp::Parameter output_topic_num_param = this->get_parameter("output_topic_num");
-        std::string output_pointcloud_topic = "/cloud_" + output_topic_num_param.as_string();
         std::string output_depth_topic = "/depth_" + output_topic_num_param.as_string();
         std::string output_odom_topic = "tof_odom_" + output_topic_num_param.as_string();
         std::string output_frame_id = "tof_" + output_topic_num_param.as_string();
-        // Subscribers
-        imu_subscription =
-            this->create_subscription<sensor_msgs::msg::Imu>("/bno055/imu", 10, std::bind(&TOFProcessor::imu_callback, this, std::placeholders::_1));
         tof_subscription =
             this->create_subscription<sensor_msgs::msg::Image>(output_depth_topic, 10, std::bind(&TOFProcessor::tof_callback, this, std::placeholders::_1));
-            // this->create_subscription<sensor_msgs::msg::PointCloud2>(output_pointcloud_topic, 10, std::bind(&TOFProcessor::tof_callback, this, std::placeholders::_1));
+        
+        // IMU Setup
+        has_initial_orientation = false;
+        imu_subscription =
+            this->create_subscription<sensor_msgs::msg::Imu>("/bno055/imu", 10, std::bind(&TOFProcessor::imu_callback, this, std::placeholders::_1));
+        
+        // Processing Setup
+        relative_transformation = Eigen::Matrix4d::Identity();
+        global_transformation = Eigen::Matrix4d::Identity();
+        ekf_transformation = Eigen::Matrix4d::Identity();
+        has_filtered_odometry = false;
+        ekf_subscription =
+            this->create_subscription<nav_msgs::msg::Odometry>("/odometry/filtered", 10, std::bind(&TOFProcessor::ekf_callback, this, std::placeholders::_1));
+        // Synchronizes ToF and IMU data to 10Hz
+        timer_ = this->create_wall_timer(std::chrono::milliseconds(100), std::bind(&TOFProcessor::process_messages, this));
         // Publishers
         odometry_pub_ = this->create_publisher<nav_msgs::msg::Odometry>(output_odom_topic, 10);
-        // Broadcast
-        timer_ = this->create_wall_timer(
-            500ms, std::bind(&TOFProcessor::publish_transform, this));
-        // Setup
-        previous_cloud = nullptr;
-        global_transformation = Eigen::Matrix4d::Identity();
+        // Broadcaster for rotational transform to "/tf" for Rviz
+        tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
     }
     
 private:
     // IMU callback for IMU subscription
     void imu_callback(const std::shared_ptr<const sensor_msgs::msg::Imu> &msg)
     {
-        RCLCPP_INFO(this->get_logger(), "Received IMU data:");
-        (void) msg;
+        tf2::Quaternion current_quat(msg->orientation.x, msg->orientation.y, msg->orientation.z, msg->orientation.w);
+        
+        // Store initial orientation
+        if (!has_initial_orientation) {
+            initial_orientation = current_quat;
+            has_initial_orientation = true;
+            RCLCPP_INFO(this->get_logger(), "Initial IMU orientation stored:\nx: %lf\ny: %lf\nz: %lf\nw: %lf\n", msg->orientation.x, msg->orientation.y, msg->orientation.z, msg->orientation.w);
+            return;
+        }
+        // Stores current orientation
+        current_orientation = current_quat;
     }
+    
     // ToF callback for ToF subscription
-    // void tof_callback(const std::shared_ptr<const sensor_msgs::msg::PointCloud2> &msg)
     void tof_callback(const std::shared_ptr<const sensor_msgs::msg::Image> &msg)
     {
         /*
             Setup
         */
-        pcl::PointCloud<pcl::PointXYZ>::Ptr current_cloud(new pcl::PointCloud<pcl::PointXYZ>());
-        // pcl::fromROSMsg(*msg, *current_cloud); //convert PointCloud2 to PointXYZ for PCL
-        Eigen::Matrix4d relative_transformation = Eigen::Matrix4d::Identity();
+        std::lock_guard<std::mutex> lock(cloud_mutex_);
+        current_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>());
+        relative_transformation = Eigen::Matrix4d::Identity();
         
         /*
             Depth Image to 3D Point Cloud
@@ -104,30 +126,81 @@ private:
                 }
             }
         }
+    }
+    
+    // EKF callback for EKF subscription
+    void ekf_callback(const std::shared_ptr<const nav_msgs::msg::Odometry> &msg){
+        std::lock_guard<std::mutex> lock(ekf_mutex_);
+        ekf_transformation = Eigen::Matrix4d::Identity();
+        ekf_transformation(0, 3) = msg->pose.pose.position.x;
+        ekf_transformation(1, 3) = msg->pose.pose.position.y;
+        ekf_transformation(2, 3) = msg->pose.pose.position.z;
+        tf2::Quaternion quat(
+            msg->pose.pose.orientation.x,
+            msg->pose.pose.orientation.y,
+            msg->pose.pose.orientation.z,
+            msg->pose.pose.orientation.w
+        );
+        tf2::Matrix3x3 tf2_rotation(quat);
+        Eigen::Matrix3d rotation;
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                rotation(i, j) = tf2_rotation[i][j];
+            }
+        }
+        ekf_transformation.block<3, 3>(0, 0) = rotation;
+        if (!has_filtered_odometry) has_filtered_odometry = true;
+    }
+    
+    void process_messages(){
+        
+        std::lock_guard<std::mutex> lock(cloud_mutex_);
+        if (!current_cloud) {
+            RCLCPP_INFO(this->get_logger(), "Missing current cloud");
+            return;
+        }
         
         /*
-            Filters
-            TODO: Implemented but not working properly yet
+            IMU Data Processing
         */
-        // Use voxel grid filter
-        // pcl::PointCloud<pcl::PointXYZ>::Ptr voxel_cloud = downsample_cloud(current_cloud);
-        // Apply noise filter
-        // pcl::PointCloud<pcl::PointXYZ>::Ptr processed_cloud = filter_outliers(current_cloud);
         
+        if (current_orientation){
+            RCLCPP_INFO(this->get_logger(), "Processing message at 10Hz");
+        } else {
+            RCLCPP_INFO(this->get_logger(), "Processing message, missing current orientation");
+            return;
+        }
+        // Calculate rotational transform between current and initial orientation
+        tf2::Quaternion rotation_difference = current_orientation * initial_orientation.inverse();
+        rotation_difference.normalize();
+        tf2::Matrix3x3 rotation_matrix(rotation_difference);
         
         /*
-            Initial Guess
-            TODO: Add initial guess for orientation/position based on IMU data
+            Apply Rotational Transform
         */
+        pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_cloud(new pcl::PointCloud<pcl::PointXYZ>());
+        transformed_cloud->header.frame_id = current_cloud->header.frame_id;
+        transformed_cloud->width = current_cloud->width;
+        transformed_cloud->height = current_cloud->height;
+        transformed_cloud->is_dense = current_cloud->is_dense;
+        transformed_cloud->points.resize(current_cloud->points.size());
+        for (size_t i = 0; i < current_cloud->points.size(); ++i) {
+            const pcl::PointXYZ &point = current_cloud->points[i];
+            pcl::PointXYZ transformed_point;
+            transformed_point.x = rotation_matrix[0][0] * point.x + rotation_matrix[0][1] * point.y + rotation_matrix[0][2] * point.z;
+            transformed_point.y = rotation_matrix[1][0] * point.x + rotation_matrix[1][1] * point.y + rotation_matrix[1][2] * point.z;
+            transformed_point.z = rotation_matrix[2][0] * point.x + rotation_matrix[2][1] * point.y + rotation_matrix[2][2] * point.z;
+            transformed_cloud->points[i] = transformed_point;
+        }
         
         /*
             ICP (Iterative Closest Point)
-            - Source: current_cloud or voxel_cloud or processed_cloud
+            - Source: transformed_cloud
             - Target: previous_cloud
         */
         if (previous_cloud) {
             pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
-            icp.setInputSource(current_cloud); // changes based on filters applied
+            icp.setInputSource(transformed_cloud);
             icp.setInputTarget(previous_cloud);
             pcl::PointCloud<pcl::PointXYZ> aligned_cloud;
             icp.align(aligned_cloud);
@@ -139,88 +212,65 @@ private:
                 relative_transformation = Eigen::Matrix4d::Identity();
                 return;
             }
+        } else {
+            previous_cloud = transformed_cloud;
+            RCLCPP_INFO(this->get_logger(), "Missing previous cloud");
+            return;
         }
-        
-        /*
-            Pose and Twist Rejection
-            TODO: do not update previous_cloud to current_cloud if the change in pose or twist is too big
-        */
-        Eigen::Vector3d curr_translation = relative_transformation.block<3, 1>(0, 3);
-        const double pose_rejection_threshold = 0.1; // instantaneous movement of 0.05 metres at 10Hz
-        static int reject_count = 0;
-        if (curr_translation.x() > pose_rejection_threshold ||
-            curr_translation.y() > pose_rejection_threshold ||
-            curr_translation.z() > pose_rejection_threshold){
-                reject_count++;
-                if (reject_count > 10) previous_cloud = nullptr;
-                return;
-            }
-        // Eigen::Matrix3d curr_rotation = relative_transformation.block<3, 3>(0, 0);
-        // Eigen::Quaterniond curr_quaternion(curr_rotation);
-        // if (twist_change > twist_rejection_threshold) return;
         
         /*
             Updating and Publishing Transformation
         */
-        previous_cloud = current_cloud; // changes based on filters applied
+        std::lock_guard<std::mutex> lock(ekf_mutex_);
+        previous_cloud = transformed_cloud;
+        if (has_filtered_odometry) global_transformation =  ekf_transformation;
         global_transformation =  global_transformation * relative_transformation;
-        publish_odometry(global_transformation);
+        publish_odometry(global_transformation, rotation_difference);
         
         /*
             Logging Messages
-            
         */
-        // // Print ToF and point cloud data
-        // static int iterations = 0;
-        // if (!iterations){
-        //     RCLCPP_INFO(this->get_logger(), "Received ToF data:");
-        //     RCLCPP_INFO(this->get_logger(), "Dimensions: [x=%u, y=%u]",
-        //         msg->height, msg->width);
-        //     for (int i=0; i<10; i++){
-        //         uint8_t item = msg->data[i];
-        //         RCLCPP_INFO(this->get_logger(), "Data: %u", item);
-        //     }
-        //     RCLCPP_INFO(this->get_logger(), "PointCloud has %zu points", current_cloud->points.size());
-        //     for (const auto &point : current_cloud->points) {
-        //         RCLCPP_INFO(this->get_logger(), "Point: x=%f, y=%f, z=%f", point.x, point.y, point.z);
-        //     }
-        //     RCLCPP_INFO(this->get_logger(), "PointCloud received with %zu points", current_cloud->size());
-        // }
-        // iterations++;
-        // std::this_thread::sleep_for(std::chrono::milliseconds(5000));
-        // Print transformation matrices
         std::cout << "Relative Matrix: " << std::endl;
         std::cout << relative_transformation << std::endl;
         std::cout << "Global Matrix: " << std::endl;
         std::cout << global_transformation << std::endl;
         // Print relative translation and rotation
         Eigen::Vector3d translation = relative_transformation.block<3, 1>(0, 3);
-        Eigen::Matrix3d rotation_matrix = relative_transformation.block<3, 3>(0, 0);
-        Eigen::Quaterniond quaternion(rotation_matrix);
         RCLCPP_INFO(this->get_logger(), "Translation (x,y,z): %f %f %f\n", translation.x(), translation.y(), translation.z());
-        RCLCPP_INFO(this->get_logger(), "Rotation (x,y,z,w): %f %f %f %f\n", quaternion.x(), quaternion.y(), quaternion.z(), quaternion.w());
+        RCLCPP_INFO(this->get_logger(), "Rotation (x,y,z,w): %f %f %f %f\n", rotation_difference.x(), rotation_difference.y(), rotation_difference.z(), rotation_difference.w());
         //Print global translation and rotation
         Eigen::Vector3d global_translation = global_transformation.block<3, 1>(0, 3);
         RCLCPP_INFO(this->get_logger(), "Global Translation (x,y,z): %f %f %f\n", global_translation.x(), global_translation.y(), global_translation.z());
-        // //Print global translation and rotation accumulated by adding relative values
-        // static Eigen::Vector3d global_translation_alt = global_transformation.block<3, 1>(0, 3);
-        // Eigen::Vector3d relative_translation = relative_transformation.block<3, 1>(0, 3);
-        // global_translation_new = global_translation_new + relative_translation;
-        // RCLCPP_INFO(this->get_logger(), "Global Translation Alternate(x,y,z): %f %f %f\n", global_translation_alt.x(), global_translation_alt.y(), global_translation_alt.z());          
-
+        
+        /*
+            Broadcasting Transform
+        */
+        geometry_msgs::msg::TransformStamped broadcast_msg;
+        broadcast_msg.header.stamp = this->now();
+        broadcast_msg.header.frame_id = "base_link";  // Parent frame
+        broadcast_msg.child_frame_id = "imu_link";   // IMU frame
+        broadcast_msg.transform.translation.x = translation.x();
+        broadcast_msg.transform.translation.y = translation.y();
+        broadcast_msg.transform.translation.z = translation.z();
+        broadcast_msg.transform.rotation.x = rotation_difference.x();
+        broadcast_msg.transform.rotation.y = rotation_difference.y();
+        broadcast_msg.transform.rotation.z = rotation_difference.z();
+        broadcast_msg.transform.rotation.w = rotation_difference.w();
+        // Publish the transform
+        tf_broadcaster_->sendTransform(broadcast_msg);
     }
     
-    void publish_odometry(const Eigen::Matrix4d &transformation) {
+    void publish_odometry(const Eigen::Matrix4d &transformation, const tf2::Quaternion &quaternion) {
         // Extract translation and rotation
         Eigen::Vector3d translation = transformation.block<3, 1>(0, 3);
-        Eigen::Matrix3d rotation_matrix = transformation.block<3, 3>(0, 0);
-        Eigen::Quaterniond quaternion(rotation_matrix);
+        // Eigen::Matrix3d rotation_matrix = transformation.block<3, 3>(0, 0);
+        // Eigen::Quaterniond quaternion(rotation_matrix);
         // Create Odometry message
         nav_msgs::msg::Odometry odometry_msg;
         odometry_msg.header.stamp = this->get_clock()->now();
         // TODO, change to parameterized
-        odometry_msg.header.frame_id = "odom";
-        odometry_msg.child_frame_id = "tof_one";
+        odometry_msg.header.frame_id = "base_link";
+        odometry_msg.child_frame_id = output_odom_topic;
         odometry_msg.pose.pose.position.x = translation.x();
         odometry_msg.pose.pose.position.y = translation.y();
         odometry_msg.pose.pose.position.z = translation.z();
@@ -232,63 +282,27 @@ private:
         odometry_pub_->publish(odometry_msg);
     }
     
-    void publish_transform() {
-        geometry_msgs::msg::TransformStamped transform;
-
-        transform.header.stamp = this->get_clock()->now();
-        // TODO, change to parameterized
-        transform.header.frame_id = "odom";
-        transform.child_frame_id = "tof_one";
-        
-        Eigen::Matrix4d transformation = global_transformation;
-
-        transform.transform.translation.x = transformation(0, 3);
-        transform.transform.translation.y = transformation(1, 3);
-        transform.transform.translation.z = transformation(2, 3);
-
-        Eigen::Matrix3d rotation_matrix = transformation.block<3, 3>(0, 0);
-        Eigen::Quaterniond quaternion(rotation_matrix);
-
-        transform.transform.rotation.x = quaternion.x();
-        transform.transform.rotation.y = quaternion.y();
-        transform.transform.rotation.z = quaternion.z();
-        transform.transform.rotation.w = quaternion.w();
-
-        tf_broadcaster->sendTransform(transform);
-    }
-    
-    // Voxel Grid Filter
-    pcl::PointCloud<pcl::PointXYZ>::Ptr downsample_cloud(pcl::PointCloud<pcl::PointXYZ>::Ptr input_cloud) {
-        pcl::PointCloud<pcl::PointXYZ>::Ptr filtered_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-        pcl::VoxelGrid<pcl::PointXYZ> voxel_filter;
-        voxel_filter.setInputCloud(input_cloud);
-        voxel_filter.setLeafSize(0.05, 0.05, 0.05);  // Adjust resolution
-        voxel_filter.filter(*filtered_cloud);
-        return filtered_cloud;
-    }
-    
-    // Noise Filtering
-    pcl::PointCloud<pcl::PointXYZ>::Ptr filter_outliers(pcl::PointCloud<pcl::PointXYZ>::Ptr input_cloud) {
-        pcl::PointCloud<pcl::PointXYZ>::Ptr filtered_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-        pcl::StatisticalOutlierRemoval<pcl::PointXYZ> sor;
-        sor.setInputCloud(input_cloud);
-        sor.setMeanK(50);
-        sor.setStddevMulThresh(1.0);
-        sor.filter(*filtered_cloud);
-        return filtered_cloud;
-    }
-    
-    
+    // IMU Setup
+    bool has_initial_orientation;
+    tf2::Quaternion initial_orientation;
+    tf2::Quaternion current_orientation;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription;
-    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr tof_subscription;
-    // rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr tof_subscription;
-    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odometry_pub_;
+    // ToF Setup
+    std::mutex cloud_mutex_;
     pcl::PointCloud<pcl::PointXYZ>::Ptr previous_cloud;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr current_cloud;
+    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr tof_subscription;
+    // Processsing Setup
+    bool has_filtered_odometry;
+    std::mutex ekf_mutex_;
+    Eigen::Matrix4d ekf_transformation;
+    Eigen::Matrix4d relative_transformation;
     Eigen::Matrix4d global_transformation;
-    std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster =
-        std::make_unique<tf2_ros::TransformBroadcaster>(this);
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr ekf_subscription;
     rclcpp::TimerBase::SharedPtr timer_;
-    
+    // Publishing
+    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odometry_pub_;
+    std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 };
 
 int main(int argc, char * argv[])
