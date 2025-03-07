@@ -32,7 +32,7 @@ public:
         this->declare_parameter("output_topic_num", "one");
         rclcpp::Parameter output_topic_num_param = this->get_parameter("output_topic_num");
         std::string output_depth_topic = "/depth_" + output_topic_num_param.as_string();
-        std::string output_odom_topic = "tof_odom_" + output_topic_num_param.as_string();
+        output_odom_topic = "tof_odom_" + output_topic_num_param.as_string();
         std::string output_frame_id = "tof_" + output_topic_num_param.as_string();
         tof_subscription =
             this->create_subscription<sensor_msgs::msg::Image>(output_depth_topic, 10, std::bind(&TOFProcessor::tof_callback, this, std::placeholders::_1));
@@ -80,7 +80,7 @@ private:
         /*
             Setup
         */
-        std::lock_guard<std::mutex> lock(cloud_mutex_);
+        std::lock_guard<std::mutex> cloud_lock(cloud_mutex_);
         current_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>());
         relative_transformation = Eigen::Matrix4d::Identity();
         
@@ -130,7 +130,7 @@ private:
     
     // EKF callback for EKF subscription
     void ekf_callback(const std::shared_ptr<const nav_msgs::msg::Odometry> &msg){
-        std::lock_guard<std::mutex> lock(ekf_mutex_);
+        std::lock_guard<std::mutex> ekf_lock(ekf_mutex_);
         ekf_transformation = Eigen::Matrix4d::Identity();
         ekf_transformation(0, 3) = msg->pose.pose.position.x;
         ekf_transformation(1, 3) = msg->pose.pose.position.y;
@@ -154,7 +154,7 @@ private:
     
     void process_messages(){
         
-        std::lock_guard<std::mutex> lock(cloud_mutex_);
+        std::lock_guard<std::mutex> cloud_lock(cloud_mutex_);
         if (!current_cloud) {
             RCLCPP_INFO(this->get_logger(), "Missing current cloud");
             return;
@@ -221,9 +221,9 @@ private:
         /*
             Updating and Publishing Transformation
         */
-        std::lock_guard<std::mutex> lock(ekf_mutex_);
+        std::lock_guard<std::mutex> ekf_lock(ekf_mutex_);
         previous_cloud = transformed_cloud;
-        if (has_filtered_odometry) global_transformation =  ekf_transformation;
+        // if (has_filtered_odometry) global_transformation =  ekf_transformation; // TODO FIX
         global_transformation =  global_transformation * relative_transformation;
         publish_odometry(global_transformation, rotation_difference);
         
@@ -289,6 +289,7 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription;
     // ToF Setup
     std::mutex cloud_mutex_;
+    std::string output_odom_topic;
     pcl::PointCloud<pcl::PointXYZ>::Ptr previous_cloud;
     pcl::PointCloud<pcl::PointXYZ>::Ptr current_cloud;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr tof_subscription;
