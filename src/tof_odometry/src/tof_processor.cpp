@@ -52,7 +52,11 @@ public:
         // Synchronizes ToF and IMU data to 10Hz
         timer_ = this->create_wall_timer(std::chrono::milliseconds(100), std::bind(&TOFProcessor::process_messages, this));
         // Publishers
+        std::string output_pointcloud_topic = "/tof_cloud_" + output_topic_num_param.as_string();
+        std::string output_rotated_topic = "/tof_rotated_" + output_topic_num_param.as_string();
         odometry_pub_ = this->create_publisher<nav_msgs::msg::Odometry>(output_odom_topic, 10);
+        rotation_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(output_rotated_topic, 10);
+        pointcloud_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(output_pointcloud_topic, 10);
         // Broadcaster for rotational transform to "/tf" for Rviz
         tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
     }
@@ -126,6 +130,11 @@ private:
                 }
             }
         }
+        sensor_msgs::msg::PointCloud2 ros_cloud;
+        pcl::toROSMsg(*current_cloud, ros_cloud);
+        ros_cloud.header.stamp = this->now();
+        ros_cloud.header.frame_id = current_cloud->header.frame_id;
+        pointcloud_pub_->publish(ros_cloud);
     }
     
     // EKF callback for EKF subscription
@@ -192,6 +201,12 @@ private:
             transformed_point.z = rotation_matrix[2][0] * point.x + rotation_matrix[2][1] * point.y + rotation_matrix[2][2] * point.z;
             transformed_cloud->points[i] = transformed_point;
         }
+        
+        sensor_msgs::msg::PointCloud2 ros_cloud;
+        pcl::toROSMsg(*transformed_cloud, ros_cloud);
+        ros_cloud.header.stamp = this->now();
+        ros_cloud.header.frame_id = transformed_cloud->header.frame_id;
+        rotation_pub_->publish(ros_cloud);
         
         /*
             ICP (Iterative Closest Point)
@@ -303,6 +318,8 @@ private:
     rclcpp::TimerBase::SharedPtr timer_;
     // Publishing
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odometry_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr rotation_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_pub_;
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 };
 
