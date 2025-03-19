@@ -21,13 +21,13 @@ class GlobalCoordinateTransformation(Node):
         
         self.odom_sub = self.create_subscription(
             Odometry,
-            '/odom',  # odom topic 
+            '/odom',  # odom topic, switch to output of ekf or camera once. Currently set to odom as second Lidar laserscan matcher was configured to publish odometry on /odom
             self.odom_callback,
             qos_profile
         )
         self.lidar_sub = self.create_subscription(
             LaserScan,
-            '/scan2',   # lidar topic is /scan but as i was testing using two lidars i had the /scan2 associated with vertically placed lidar.  
+            '/scan',   # lidar topic is /scan but as i was testing using two lidars i had the /scan2 associated with vertically placed lidar.  
             self.lidar_callback,
             qos_profile
         )
@@ -40,8 +40,8 @@ class GlobalCoordinateTransformation(Node):
         self.last_saved_pose = None
 
         # Movement thresholds to avoid redundant data
-        self.position_threshold = 0.1  
-        self.orientation_threshold = 1  
+        self.position_threshold = 0.1 # meters smaller threshold better but more noisy
+        self.orientation_threshold = 3  # degrees keep above than 1 for less noisy data
         
     def odom_callback(self, msg):
         self.current_pose = {
@@ -100,25 +100,33 @@ class GlobalCoordinateTransformation(Node):
         return position_change > self.position_threshold or orientation_change > self.orientation_threshold
         
     def rotation_matrix(self, quaternion): 
-        x, y, z, w = quaternion
+        x=quaternion[0]
+        y=quaternion[1]
+        z =quaternion[2]
+        w = quaternion[3]
         return np.array([
-            [1 - 2 * (y**2 + z**2), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-            [2 * (x * y + z * w), 1 - 2 * (x**2 + z**2), 2 * (y * z - x * w)],
-            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x**2 + y**2)]
+            [1 - 2 * (y**2+ z**2), 2* (x*y - z*w), 2 * (x*z + y*w)],
+            [2 * (x * y + z * w), 1 - 2*(x**2 + z**2), 2*(y*z - x*w)],
+            [2*(x * z - y * w), 2*(y*z + x*w), 1 - 2 * (x**2 + y**2)]
         ])
     def quat_multiply(self, q1, q2):
-        x1, y1, z1,w1 = q1
-        x2, y2, z2,w2 = q2
-        w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
-        x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
-        y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
-        z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+        x1=q1[0]
+        y1 =q1[1]
+        z1 =q1[2]
+        w1 = q1[3]
+        x2=q2[0]
+        y2 =q2[1]
+        z2=q2[2]
+        w2 =q2[3]
+        w = w1*w2 - x1 *x2 - y1 * y2 - z1 * z2
+        x = w1*x2 +x1* w2 +y1 * z2 - z1 * y2
+        y = w1*y2 - x1 * z2+ y1 *w2 + z1 * x2
+        z = w1*z2 +x1 * y2 - y1* x2 + z1 * w2
         return np.array([x, y, z, w])
         
     def quat_inv(self, quaternion):
-        x, y, z, w = quaternion
-        return np.array([-x, -y, -z, w])
-        
+        return np.array([-quaternion[0], -quaternion[1], -quaternion[2], quaternion[3]
+
     def save_data(self, points):
         filename = 'transformed_points.xyz'
         with open(filename, 'a') as file:
@@ -131,13 +139,14 @@ class GlobalCoordinateTransformation(Node):
         orientation = [pose['qx'], pose['qy'], pose['qz'], pose['qw']]
         rotation_matrix = self.rotation_matrix(orientation)
         transformed_points = [np.dot(rotation_matrix, point) + position for point in points]
-        return transformed_points
+        return transformed_points # Tested with lcoalization using a second lidar utilizing position tracking , points correclty transformed to new position
     
     # the pointcloud 2 message is not necessary and only used for debug to visualize point cloud in real time in RVIZ
     # in RVIZ change to point cloud , change topic reliability to best effort
     # change frame to odom topic your using and points should appear 
-    # TODO RVIZ config that launches with the launch file so person could immediately have everything setup
-    
+    # TODO RVIZ config that launches with the launch file so person could immediately have everything setup [X] debug only
+
+    # the pointcloud 2 message is not necessary and only used for debug to visualize point cloud in real time in RVIZ, comment out for faster perfromance
     def create_pointcloud2(self, points): 
         header = Header()
         header.stamp = self.get_clock().now().to_msg()
