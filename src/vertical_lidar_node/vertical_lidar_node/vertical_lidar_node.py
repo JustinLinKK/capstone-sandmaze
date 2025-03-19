@@ -29,7 +29,7 @@ class VerticalLidarMapper(Node):
         )
         self.lidar_sub = self.create_subscription(
             LaserScan,
-            '/scan2',  
+            '/scan',  
             self.lidar_callback,
             qos_profile
         )
@@ -43,7 +43,7 @@ class VerticalLidarMapper(Node):
         self.tf_broadcaster = TransformBroadcaster(self)
         self.current_orientation = None
         self.initial_orientation = None  # Store the first IMU orientation
-        self.orientation_threshold = 1  # Threshold for orientation change to trigger saving
+        self.orientation_threshold = 3  # Threshold for orientation change to trigger saving
         self.last_saved_orientation = None
 
         # Timer to check for missing messages
@@ -112,29 +112,39 @@ class VerticalLidarMapper(Node):
 
         
     def quat_inv(self, quaternion):
-        x, y, z, w = quaternion
-        return np.array([-x, -y, -z, w])
+        
+        return np.array([-quaternion[0], -quaternion[1], -z=quaternion[2], quaternion[3]])
     
     def quat_multiply(self, q1, q2):
-        x1, y1, z1, w1 = q1
-        x2, y2, z2, w2 = q2
+        x1=quaternion[0]
+        y1=quaternion[1]
+        z1=quaternion[2]
+        w1 = quaternion[3]
+        
+        x2=quaternion[0]
+        y2=quaternion[1]
+        z2=quaternion[2]
+        w2 = quaternion[3]
         w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
         x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
         y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
         z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
         return np.array([x, y, z, w])
-    
-    def relative_orientation(self, current, initial):
+    # relative orientation ( need to check if needed given imu is calibrated after power on)
+    def relative_orientation(self, current, initial): 
         initial_inv = np.array([-initial[0], -initial[1], -initial[2], initial[3]])  
         relative = self.quat_multiply(current, initial_inv)
         return relative
         
     def rotation_matrix(self, quaternion):
-        x, y, z, w = quaternion
+        x=quaternion[0]
+        y=quaternion[1]
+        z=quaternion[2]
+        w = quaternion[3]
         return np.array([
-            [1 - 2 * (y**2 + z**2), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-            [2 * (x * y + z * w), 1 - 2 * (x**2 + z**2), 2 * (y * z - x * w)],
-            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x**2 + y**2)]
+            [1 - 2 * (y**2 + z**2), 2 * (x*y - z * w), 2 *(x*z + y*w)],
+            [2 *(x*y + z*w), 1 - 2 * (x**2 + z**2), 2 * (y*z - x*w)],
+            [2 * (x*z - y*w), 2 * (y*z + x*w), 1 - 2 *(x**2+ y**2)]
         ])
     
     def save_data(self, points):
@@ -160,6 +170,7 @@ class VerticalLidarMapper(Node):
         ]
         point_data = []
         for x, y, z in points:
+            
             point_data.extend(struct.pack('fff', x, y, z))
         pointcloud_msg = PointCloud2()
         pointcloud_msg.header = header  
@@ -168,6 +179,7 @@ class VerticalLidarMapper(Node):
         pointcloud_msg.fields = fields
         pointcloud_msg.is_bigendian = False
         pointcloud_msg.point_step = 12  
+        
         pointcloud_msg.row_step = pointcloud_msg.point_step * len(points)
         pointcloud_msg.data = bytearray(point_data)
         pointcloud_msg.is_dense = True
