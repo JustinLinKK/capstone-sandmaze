@@ -125,7 +125,7 @@ class GlobalCoordinateTransformation(Node):
         return np.array([x, y, z, w])
         
     def quat_inv(self, quaternion):
-        return np.array([-quaternion[0], -quaternion[1], -quaternion[2], quaternion[3]
+        return np.array([-quaternion[0], -quaternion[1], -quaternion[2], quaternion[3])
 
     def save_data(self, points):
         filename = 'transformed_points.xyz'
