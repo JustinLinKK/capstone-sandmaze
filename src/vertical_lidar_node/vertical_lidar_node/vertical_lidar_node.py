@@ -113,18 +113,18 @@ class VerticalLidarMapper(Node):
         
     def quat_inv(self, quaternion):
         
-        return np.array([-quaternion[0], -quaternion[1], -z=quaternion[2], quaternion[3]])
+        return np.array([-quaternion[0], -quaternion[1], quaternion[2], quaternion[3]])
     
     def quat_multiply(self, q1, q2):
-        x1=quaternion[0]
-        y1=quaternion[1]
-        z1=quaternion[2]
-        w1 = quaternion[3]
+        x1=q1[0]
+        y1=q1[1]
+        z1=q1[2]
+        w1 = q1[3]
         
-        x2=quaternion[0]
-        y2=quaternion[1]
-        z2=quaternion[2]
-        w2 = quaternion[3]
+        x2=q2[0]
+        y2=q2[1]
+        z2=q2[2]
+        w2 = q2[3]
         w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
         x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
         y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
